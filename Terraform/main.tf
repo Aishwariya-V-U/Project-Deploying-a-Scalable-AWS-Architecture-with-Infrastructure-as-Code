@@ -1,7 +1,4 @@
-#######################################
 # Provider
-#######################################
-
 terraform {
   required_providers {
     aws = {
@@ -15,10 +12,7 @@ provider "aws" {
   region = var.aws_region
 }
 
-#######################################
 # VPC
-#######################################
-
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
@@ -29,10 +23,8 @@ resource "aws_vpc" "main" {
   }
 }
 
-#######################################
-# Subnets (2 public, 2 private)
-#######################################
 
+# Subnets (2 public, 2 private)
 locals {
   az1 = "${var.aws_region}a"
   az2 = "${var.aws_region}b"
@@ -82,10 +74,8 @@ resource "aws_subnet" "private_2" {
   }
 }
 
-#######################################
-# Internet Gateway + Public Route Table
-#######################################
 
+# Internet Gateway + Public Route Table
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
 
@@ -117,10 +107,8 @@ resource "aws_route_table_association" "public_2_assoc" {
   route_table_id = aws_route_table.public.id
 }
 
-#######################################
-# NAT Gateway + Private Route Table
-#######################################
 
+# NAT Gateway + Private Route Table
 resource "aws_eip" "nat" {
   domain = "vpc"
 
@@ -163,10 +151,8 @@ resource "aws_route_table_association" "private_2_assoc" {
   route_table_id = aws_route_table.private.id
 }
 
-#######################################
-# Security Groups
-#######################################
 
+# Security Groups
 resource "aws_security_group" "alb_sg" {
   name        = "${var.project_name}-alb-sg"
   description = "Allow HTTP from internet"
@@ -238,3 +224,4 @@ resource "aws_security_group" "rds_sg" {
     Name = "${var.project_name}-rds-sg"
   }
 }
+
