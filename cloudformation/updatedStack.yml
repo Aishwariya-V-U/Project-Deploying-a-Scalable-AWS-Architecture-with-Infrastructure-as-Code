@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS project - EC2 AutoScaling, ALB, RDS and Lambda using existing VPC/network
+
+Resources:
+  # ---------- Target Group & ALB ----------
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: vpc-0e3debb63a9d33b26
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: 200
+
+  AppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      SecurityGroups:
+        - sg-07a3bf3b0005dd326     # ALB SG
+      Subnets:
+        - subnet-04f5880f330f0b05e # public-1
+        - subnet-0a8f0be4d38ccfbb8 # public-2
+
+  AppListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+
+  # ---------- Launch Template & AutoScalingGroup ----------
+  # This now installs Apache + PHP and creates an index.php
+  # that connects to your RDS MySQL instance.
+
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: ami-0c2b8ca1dad447f8a
+        InstanceType: t2.micro
+        SecurityGroupIds:
+          - sg-037776349c2799f5e   # EC2 SG
+        UserData:
+          Fn::Base64:
+            !Sub
+              - |
+                #!/bin/bash
+                yum update -y
+                yum install -y httpd php php-mysqlnd
+
+                systemctl enable httpd
+                systemctl start httpd
+
+                cat > /var/www/html/index.php << 'EOF'
+                <?php
+                $host = '${DBEndpoint}';
+                $user = 'admin';
+                $pass = 'Password123!';
+                $db   = 'mysql';  // default MySQL database
+
+                $conn = new mysqli($host, $user, $pass, $db);
+                if ($conn->connect_error) {
+                    die("DB connection failed: " . $conn->connect_error);
+                }
+
+                echo "<h1>AWS Project - Web App</h1>";
+                echo "<p>Connected to MySQL successfully!</p>";
+                echo "<p>DB Host: " . htmlspecialchars($host) . "</p>";
+                ?>
+                EOF
+              - { DBEndpoint: !GetAtt MyRDS.Endpoint.Address }
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - subnet-04f5880f330f0b05e
+        - subnet-0a8f0be4d38ccfbb8
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      MinSize: "1"
+      MaxSize: "3"
+      DesiredCapacity: "1"
+      TargetGroupARNs:
+        - !Ref AppTargetGroup
+
+  # ---------- RDS Subnet Group & Instance ----------
+
+  MyDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Private subnets for RDS"
+      SubnetIds:
+        - subnet-0b51966ef8df748b1 # private-1
+        - subnet-0aad65ae66d7977b4 # private-2
+
+  MyRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: project-db
+      AllocatedStorage: 20
+      DBInstanceClass: db.t3.micro
+      Engine: mysql
+      MasterUsername: admin
+      MasterUserPassword: Password123!
+      DBSubnetGroupName: !Ref MyDBSubnetGroup
+      VPCSecurityGroups:
+        - sg-0a37d132915283621     # RDS SG
+      PubliclyAccessible: false
+      MultiAZ: false
+      DeletionProtection: false
+      BackupRetentionPeriod: 0
+
+  # ---------- AutoScaling Policies (CPU-based) ----------
+
+  HighCPUScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: SimpleScaling
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: 1          # add 1 instance
+      Cooldown: 60
+
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale out if ASG CPU > 60% for 2 minutes"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 60
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AppAutoScalingGroup
+      AlarmActions:
+        - !Ref HighCPUScaleOutPolicy
+
+  LowCPUScaleInPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: SimpleScaling
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: -1         # remove 1 instance
+      Cooldown: 60
+
+  LowCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale in if ASG CPU < 30% for 5 minutes"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 30
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AppAutoScalingGroup
+      AlarmActions:
+        - !Ref LowCPUScaleInPolicy
+
+  # ---------- Lambda (placeholder for S3 logging) ----------
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  S3UploadLoggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: project-s3-upload-logger
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              print("Placeholder Lambda - will be wired to S3 later")
+              return {"statusCode": 200, "body": json.dumps("ok")}
+
+Outputs:
+  LoadBalancerDNS:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt AppLoadBalancer.DNSName
