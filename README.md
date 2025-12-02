@@ -11,9 +11,13 @@ This repository contains all required project artifacts, including Terraform scr
 Design a scalable AWS architecture (VPC, subnets, ALB, EC2, RDS, S3, Lambda).
 Deploy the infrastructure using:
 1.Terraform for networking
+
 2.CloudFormation for compute + database + serverless
+
 3.Implement an EC2-hosted web application with auto scaling.
+
 4.Create a Lambda function triggered by S3 uploads.
+
 5.Interact with AWS using:
   Console
   AWS CLI
